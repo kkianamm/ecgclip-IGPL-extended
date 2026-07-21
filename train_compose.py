@@ -24,8 +24,9 @@ from torch.utils.data import DataLoader, TensorDataset
 
 import config_ipl as C
 from config_experiments import get_experiment
-from ipl import (IPLModel, build_splits, cache_features, few_shot_indices,
+from ipl import (IPLModel, cache_features, few_shot_indices,
                  load_biomedclip, multilabel_metrics)
+from data_fix import build_splits          # corrected, alias-aware label resolution
 from modules import BatchContext, build_stack
 
 # ------------------------------------------------------------------ #
@@ -45,8 +46,12 @@ def get_cached_features(model, dataset, tag, indices=None):
     path = os.path.join(C.CACHE_DIR, f"{tag}.pt")
     if os.path.exists(path):
         blob = torch.load(path)
-        return blob["feats"], blob["targets"]
+        # Guard against a stale cache written with the old all-zero targets.
+        if blob["targets"].sum() > 0 and (blob["targets"].sum(0) > 0).all():
+            return blob["feats"], blob["targets"]
+        print(f"[compose] stale/degenerate cache {path} -> rebuilding")
     feats, targets = cache_features(model, dataset, C.BATCH_SIZE, C.NUM_WORKERS, indices)
+    assert targets.sum() > 0, f"targets for '{tag}' are all zero after resolve; check LABEL_ALIASES"
     torch.save({"feats": feats, "targets": targets}, path)
     return feats, targets
 
