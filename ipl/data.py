@@ -23,36 +23,110 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
-def _resolve_targets(df: pd.DataFrame, classnames):
-    if all(c in df.columns for c in classnames):
-        return df[classnames].astype(float).values
+def _label_code(name):
+    """Map readable prompt names to PTB-XL superclass columns."""
+    aliases = {
+        "normal ecg": "NORM",
+        "myocardial infarction": "MI",
+        "st t wave change": "STTC",
+        "st-t wave change": "STTC",
+        "st/t wave change": "STTC",
+        "conduction disturbance": "CD",
+        "hypertrophy": "HYP",
+    }
 
-    list_col = next((c for c in ["labels", "superclass", "superclasses",
-                                 "diagnostic_superclass", "scp_superclass"]
-                     if c in df.columns), None)
+    value = str(name).strip()
+    return aliases.get(value.lower(), value.upper())
+
+
+def _resolve_targets(df: pd.DataFrame, classnames):
+    target_codes = [_label_code(name) for name in classnames]
+
+    # Preferred PTB-XL format:
+    # NORM, MI, STTC, CD, HYP as separate binary columns.
+    if all(code in df.columns for code in target_codes):
+        values = (
+            df[target_codes]
+            .apply(pd.to_numeric, errors="coerce")
+            .fillna(0)
+            .to_numpy(dtype=np.float32)
+        )
+        return (values > 0).astype(np.float32)
+
+    # Fallback: one list or pipe-separated label column.
+    list_col = next(
+        (
+            column
+            for column in [
+                "labels",
+                "superclass",
+                "superclasses",
+                "diagnostic_superclass",
+                "scp_superclass",
+            ]
+            if column in df.columns
+        ),
+        None,
+    )
+
     if list_col is None:
         raise ValueError(
-            f"labels.csv has neither per-class columns {classnames} nor a "
-            f"list column. Columns present: {list(df.columns)}"
+            f"Could not find target columns {target_codes}. "
+            f"Available columns: {list(df.columns)}"
         )
-    idx = {c: i for i, c in enumerate(classnames)}
-    Y = np.zeros((len(df), len(classnames)), dtype=np.float32)
-    for r, val in enumerate(df[list_col].tolist()):
-        items = val if isinstance(val, (list, tuple)) else _parse_list(val)
-        for it in items:
-            if it in idx:
-                Y[r, idx[it]] = 1.0
-    return Y
+
+    index = {code: i for i, code in enumerate(target_codes)}
+    targets = np.zeros(
+        (len(df), len(target_codes)),
+        dtype=np.float32,
+    )
+
+    for row, value in enumerate(df[list_col].tolist()):
+        for item in _parse_list(value):
+            code = _label_code(item)
+            if code in index:
+                targets[row, index[code]] = 1.0
+
+    if targets.sum() == 0:
+        examples = df[list_col].dropna().astype(str).head(10).tolist()
+        raise ValueError(
+            f"All resolved targets are zero. "
+            f"Column: {list_col}; examples: {examples}"
+        )
+
+    return targets
 
 
-def _parse_list(val):
-    if not isinstance(val, str):
+def _parse_list(value):
+    """Parse Python lists, comma-separated labels, or NORM|MI format."""
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value]
+
+    if value is None or pd.isna(value):
         return []
+
+    value = str(value).strip()
+    if not value:
+        return []
+
+    if "|" in value:
+        return [
+            item.strip()
+            for item in value.split("|")
+            if item.strip()
+        ]
+
     try:
-        out = ast.literal_eval(val)
-        return list(out) if isinstance(out, (list, tuple)) else [str(out)]
+        parsed = ast.literal_eval(value)
+        if isinstance(parsed, (list, tuple, set)):
+            return [str(item).strip() for item in parsed]
+        return [str(parsed).strip()]
     except (ValueError, SyntaxError):
-        return [t.strip(" '\"[]") for t in val.split(",") if t.strip(" '\"[]")]
+        return [
+            item.strip(" '\"[]")
+            for item in value.split(",")
+            if item.strip(" '\"[]")
+        ]
 
 
 def _resolve_split(df: pd.DataFrame):
