@@ -26,7 +26,7 @@ import config_ipl as C
 from config_experiments import get_experiment
 from ipl import (IPLModel, cache_features, few_shot_indices,
                  load_biomedclip, multilabel_metrics)
-from data import build_splits          # corrected, alias-aware label resolution
+from data_fix import build_splits          # corrected, alias-aware label resolution
 from modules import BatchContext, build_stack
 
 # ------------------------------------------------------------------ #
